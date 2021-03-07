@@ -2,7 +2,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
-ENV_NAME='py-js-json-dev'
+DEV_ENV_NAME='py-js-json-dev'
 init_venv "${DEV_ENV_NAME}"
 
 maybe_run_pip_install "${DEV_ENV_NAME}" "${REQUIREMENTS_DIR}/development.txt"
