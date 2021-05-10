@@ -1,9 +1,13 @@
+import os
+
 import urllib.parse
 import posixpath as pp
 
 
 class URI:
     """URI object."""
+
+    sep = pp.sep
 
     def __init__(self, scheme, path, anchor):
         self.scheme = scheme
@@ -35,6 +39,16 @@ class URI:
             anchor=self.anchor or anchor,
         )
 
+    def appendPath(self, *els):
+        """Add new els to the path."""
+        parent_path = self.path or ''
+        return URI(self.scheme, pp.join(parent_path, *els), self.anchor)
+
+    def appendAnchor(self, *els):
+        """Add new els to the path."""
+        parent_anchor = self.anchor or ''
+        return URI(self.scheme, self.path, pp.join(parent_anchor, *els))
+
     def toString(self):
         out = []
         if self.scheme:
@@ -50,3 +64,17 @@ class URI:
             self.__class__.__name__,
             self.toString()
         )
+
+def posix_path_to_os_path(posix_path):
+    parts = pp.split(posix_path)
+    out = os.path.join(*parts)
+    if posix_path.startswith(pp.sep):
+        out = os.path.abspath(out)
+    return out
+
+def os_path_to_posix_path(os_path):
+    parts = os_path.split(os.sep)
+    out = pp.join(*parts)
+    if os_path.startswith(os.sep):
+        out = pp.normpath(pp.sep + out)
+    return out

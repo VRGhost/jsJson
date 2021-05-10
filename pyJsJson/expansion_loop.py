@@ -1,59 +1,38 @@
 """Expansion loop(s)."""
 
+import itertools
+import logging
+
+from pyJsJson.dependency_graph.base import ExpansionRvCode
+
+
+logger = logging.getLogger(__name__)
+
 
 class ExpansionLoop:
     """An object that successively calls expansions of any expandable objects it is tracking."""
 
-    def __init__(self):
-        self._loop = []
-        self._lastElIdx = 0
-        self._needsSort = True
+    def __init__(self, root_namespace):
+        self._ns = root_namespace
+        self._lastRootGraphCount = None
 
-    def extend(self, els):
-        self._loop.extend(els)
-        self._needsSort = True
+    def iterTargetGraphs(self):
+        idx = -1 # in case there is nothing to enumerate
+        for (idx, tree) in enumerate(self._ns.trees.iterUnexpanded()):
+            yield tree
+        total_cnt = idx + 1
+        if self._lastRootGraphCount is not None:
+            # Not a first loop
+            if self._lastRootGraphCount != total_cnt:
+                logger.debug(f"Number of graphs being expanded changed from {self._lastRootGraphCount} to {total_cnt}.")
+        self._lastRootGraphCount = total_cnt
 
-    def add(self, el):
-        self._loop.append(el)
-        self._needsSort = True
 
-    def next(self):
-        """Return next element to be expanded."""
-        if self._needsSort:
-            self._sort()
-
-        startIdx = self._nextIdx()
-        if startIdx is None:
-            return None
-        return self._loop[startIdx]
-
-    def _nextIdx(self):
-        """Increment and return next element index."""
-        if not self._loop:
-            return None
-
-        out = self._lastElIdx + 1
-        out = max(0, out) % len(self._loop)
-        self._lastElIdx = out
-        return out
-
-    def _sort(self):
-        """Sort elements in the loop."""
-        # TODO
-        pass
-        self._lastElIdx = 0
-        self._needsSort = False
-
-    def allExpanded(self):
-        for el in self._loop:
-            if not el.isExpanded():
-                return False
-        return True
-
-    def allEls(self):
-        return tuple(self._loop)
-
-    def __repr__(self):
-        return "<{} ({} elements)>".format(
-            self.__class__.__name__, len(self._loop)
-        )
+    def __iter__(self, max_iter=100):
+        """Iterate over expansions."""
+        max_iter -= 1
+        for idx in itertools.count():
+            if idx > max_iter:
+                break
+            for target in self.iterTargetGraphs():
+                yield target.doExpand(self._ns)

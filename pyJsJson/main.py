@@ -34,15 +34,11 @@ def main(args):
         os.path.dirname(input_fname)
     )
 
-    expand = pyJsJson.expand.JsonExpand()
+    expand = pyJsJson.expand.JsonExpand(allowed_search_roots=search_dirs)
     expand.loadCommands(pyJsJson.commands.DEFAULT_COMMANDS)
-    tree = expand.loadJsonFile(
-        input_fname,
-        search_dirs
-    )
+    tree = expand.loadJsonFile(input_fname)
 
-    expand.expandAll()
-    out = tree.getResult()
+    out = expand.expand(tree)
 
     with contextlib.ExitStack() as stack:
         if args.output == '-':

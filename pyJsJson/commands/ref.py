@@ -1,155 +1,106 @@
 import os
 import posixpath as pp
 
-from ..util import URI, collections_abc
+from ..util import (
+    URI, posix_path_to_os_path,
+    collections_abc,
+)
+
+from ..dependency_graph.base import (
+    BaseDependencyObject,
+    Primitive as DependencyPrimitive,
+    ExpansionRvCode,
+    ExpansionRv,
+)
 
 from . import (
     base,
     exceptions,
-    validators,
 )
-from ..base import Expandable
-from ..tree import TreeCls
 
-def _parseRefUri(val):
-    uri = URI.fromString(val)
-    if not uri.scheme and not uri.path and uri.anchor:
-        # Only anchor specified => self-reference
-        uri = uri.defaults(
-            scheme='__tree__',
-            path='__self__',
-        )
-    return uri
+class RefSchemaExpander(BaseDependencyObject):
+    """Base class for $ref schema expanders."""
 
-class RefSubtreeWalker(Expandable):
+    scheme = 'unknown'
 
-    def __init__(self, expansion_loop, parent_ref, tree, path):
-        super(RefSubtreeWalker, self).__init__(expansion_loop)
-        self.parentRef = parent_ref
-        self.currentTarget = tree
-        self.fullPath = self.pathRemaining = tuple(path)
-        self._result = None
+    @classmethod
+    def match(cls, maybe_uri):
+        try:
+            child_scheme = maybe_uri.scheme
+        except AttributeError:
+            # Not an uri
+            return False
+        return child_scheme == cls.scheme
 
-    def dependsOn(self):
-        return (
-            self.currentTarget,
-        )
 
-    def expandStep(self):
-        new_remaining = list(self.pathRemaining)
-        new_target = self.currentTarget
+class FileSchemaExpander(RefSchemaExpander):
+    """Expands local file."""
 
-         # A function to mark if branches that have actually consumed an element of walkable path
-        _consumeKey = lambda: new_remaining.pop(0)
-        while new_remaining:
-            key = new_remaining[0]
-            if isinstance(new_target, collections_abc.Mapping):
-                try:
-                    new_target = new_target[key]
-                except KeyError:
-                    self._setResult(exceptions.InvalidReference(self.parentRef, key))
-                    return
-                # No errors
-                _consumeKey()
-            elif isinstance(new_target, collections_abc.Array):
-                try:
-                    key = int(key)
-                except ValueError:
-                    1/0
-                2/0
-            elif isinstance(new_target, TreeCls):
-                # wait for the next expansion step
-                try:
-                    new_target = self.currentTarget.getPartialResult(key)
-                except (KeyError, IndexError, ValueError):
-                    self._setResult(exceptions.InvalidReference(self.parentRef, key))
-                    return
-                _consumeKey()
-                break
-            elif isinstance(new_target, base.Expandable):
-                if new_target.isExpanded():
-                    new_target = new_target.getResult()
-                break # always wait for the next expansion loop.
-            else:
-                raise NotImplementedError(new_target)
-        if new_remaining:
-            self.pathRemaining = tuple(new_remaining)
-            self.currentTarget = new_target
+    scheme = 'file'
+
+    def doExpand(self, namespace):
+        tree = namespace.loadJsonFile(posix_path_to_os_path(self.data.path))
+        trees_api = namespace.root.trees
+        token = trees_api.add(self, tree)
+        if trees_api.isExpanded(token):
+            out = trees_api.getResult(token)
         else:
-            self._setResult(new_target)
+            out = ExpansionRv(
+                ExpansionRvCode.BLOCKED_BY,
+                DependencyPrimitive(self.name, token)
+            )
+        return out
 
-    def _setResult(self, result):
-        self.pathRemaining = None # Force for the walker to be expanded
-        self._result = result
-
-    def getResult(self):
-        rv = self._result
-        if isinstance(rv, Exception):
-            raise rv
-        return rv
-
-    def isExpanded(self):
-        return super(RefSubtreeWalker, self).isExpanded() and (not self.pathRemaining)
-
-    def __repr__(self):
-        return "<{} target={} path {{ remaining={} ; full={} }}>".format(
-            self.__class__.__name__, self.currentTarget,
-            self.pathRemaining, self.fullPath,
-        )
 
 class Ref(base.Base):
     """$ref expander."""
 
     key = '$ref'
 
-    validator = validators.PrimitiveDataValidator(
-        input_type=str,
-        cast_func=_parseRefUri,
-    )
+    def _walkAnchor(self, data, path):
+        path = tuple(el for el in path if el)
+        out = data
+        for el in path:
+            out = out.data[el]
+        return out
 
-    _waitingForTree = None
+    def _applyMyAction(self, namespace, data):
+        assert isinstance(data, str), data
+        uri = URI.fromString(data)
+        expanderCls = self._getExpander(uri)
+        expander = expanderCls(
+            name=f"{expanderCls.__name__}({namespace.var.uri.toString()}, {data!r})",
+            data=uri
+        )
+        with namespace.child(name='expander') as expander_ns:
+            full_out = expander.doExpand(expander_ns)
 
-    def expandStep(self):
-        uri = self.data
-        scheme = uri.scheme
-        out_fn = None
-
-        if scheme == 'file':
-            subTree = self._expandFile(uri.path)
-            self._setSubTreeResult(subTree)
-        elif scheme == '__tree__':
-            # Direct tree reference.
-            #  Only self-references are expected to work like this for now.
-            assert uri.path == '__self__', uri.path
-            self._setSubTreeResult(self.root)
+        if full_out.state == ExpansionRvCode.SUCCESS:
+            anchor_path = pp.split(uri.anchor or '')
+            try:
+                out = ExpansionRv(
+                    ExpansionRvCode.SUCCESS,
+                    self._walkAnchor(full_out.result, anchor_path)
+                )
+            except (KeyError, IndexError) as el:
+                raise exceptions.InvalidReference(uri, el)
         else:
-            raise exceptions.UnsupportedOperation("I don't know how to expand {!r} scheme ({})".format(
-                scheme,
-                uri
-            ))
-        return out_fn
+            out = full_out
+        return out
 
-    def _setSubTreeResult(self, subTree):
-        """Set an element of subtree as a result."""
-        if self.data.anchor:
-            result = RefSubtreeWalker(
-                expansion_loop=self.expansion_loop,
-                parent_ref=self,
-                tree=subTree,
-                path=(
-                    el
-                    for el in self.data.anchor.split(pp.sep)
-                    if el # remove any empty elements
-                ),
-            )
-        else:
-            result = subTree
-        self.setResult(result)
-        assert self.hasResult()
-
-    def _expandFile(self, uri_path):
-        """Expand a file."""
-        # A naive way to convert slashes to OS-specific flavour.
-        #  TODO: find a better implementation
-        os_path = uri_path.replace(pp.sep, os.sep)
-        return self.root.loadJsonFile(os_path)
+    def _getExpander(self, uri):
+        expanders = (
+            FileSchemaExpander,
+        )
+        matches = [
+            exp for exp in expanders
+            if exp.match(uri)
+        ]
+        if not matches:
+            supported_schemes = sorted(set(el.scheme for el in expanders))  # useful in error generation
+            raise exceptions.UnsupportedOperation(f"Unable to find URI expander for {uri!r} (supported schemes: {supported_schemes})")
+        elif len(matches) > 1:
+            raise exceptions.ExpansionFailure(f"Multiple ref expanders found for scheme {uri!r}: {matches}")
+        # else
+        assert len(matches) == 1, matches
+        return matches[0]
